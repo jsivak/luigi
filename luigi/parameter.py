@@ -26,7 +26,11 @@ import warnings
 from enum import IntEnum
 import json
 from json import JSONEncoder
-from collections import OrderedDict, Mapping
+from collections import OrderedDict
+try:
+    from collections.abc import Mapping
+except ImportError:
+    from collections import Mapping
 import operator
 import functools
 from ast import literal_eval
@@ -217,9 +221,6 @@ class Parameter(object):
             found = getattr(cp_parser.known_args, dest, None)
             yield (self._parse_or_no_value(found), None)
         yield (self._get_value_from_config(task_name, param_name), None)
-        yield (self._get_value_from_config(task_name, param_name.replace('_', '-')),
-               'Configuration [{}] {} (with dashes) should be avoided. Please use underscores.'.format(
-                   task_name, param_name))
         if self._config_path:
             yield (self._get_value_from_config(self._config_path['section'], self._config_path['name']),
                    'The use of the configuration [{}] {} is deprecated. Please use [{}] {}'.format(
@@ -1114,8 +1115,8 @@ class TupleParameter(ListParameter):
         try:
             # loop required to parse tuple of tuples
             return tuple(tuple(x) for x in json.loads(x, object_pairs_hook=_FrozenOrderedDict))
-        except ValueError:
-            return literal_eval(x)  # if this causes an error, let that error be raised.
+        except (ValueError, TypeError):
+            return tuple(literal_eval(x))  # if this causes an error, let that error be raised.
 
 
 class NumericalParameter(Parameter):
