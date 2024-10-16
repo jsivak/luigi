@@ -14,7 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-from __future__ import print_function
 
 import datetime
 import pickle
@@ -30,6 +29,7 @@ luigi.notifications.DEBUG = True
 
 
 class A(luigi.Task):
+    task_namespace = 'decorator'  # to prevent task name conflict between tests
     param1 = luigi.Parameter("class A-specific default")
 
 

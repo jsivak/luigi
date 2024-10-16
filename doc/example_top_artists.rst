@@ -41,7 +41,7 @@ Step 1 - Aggregate Artist Streams
 
             with self.output().open('w') as out_file:
                 for artist, count in artist_count.iteritems():
-                    print >> out_file, artist, count
+                    print(artist, count, file=out_file)
 
 Note that this is just a portion of the file ``examples/top_artists.py``.
 In particular, ``Streams`` is defined as a :class:`~luigi.task.Task`,
@@ -155,7 +155,7 @@ Python code for the Spark job is found below.
         # The second field is the artist
         counts = streams \
             .map(lambda row: (row[1], 1)) \
-            .reduceByKey(add)
+            .reduceByKey(operator.add)
 
         counts.write.option('sep', '\t').csv(output_path)
 
@@ -200,7 +200,7 @@ we choose to do this not as a Hadoop job, but just as a plain old for-loop in Py
             top_10 = nlargest(10, self._input_iterator())
             with self.output().open('w') as out_file:
                 for streams, artist in top_10:
-                    print >> out_file, self.date_interval.date_a, self.date_interval.date_b, artist, streams
+                    print(self.date_interval.date_a, self.date_interval.date_b, artist, streams, file=out_file)
 
         def _input_iterator(self):
             with self.input().open('r') as in_file:

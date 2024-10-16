@@ -23,7 +23,7 @@ from helpers import unittest
 from luigi.contrib.pig import PigJobError, PigJobTask
 from mock import patch
 
-from nose.plugins.attrib import attr
+import pytest
 
 
 class SimpleTestJob(PigJobTask):
@@ -54,7 +54,7 @@ class ComplexTestJob(PigJobTask):
         return ['-x', 'local']
 
 
-@attr('apache')
+@pytest.mark.apache
 class SimplePigTest(unittest.TestCase):
     def setUp(self):
         pass
@@ -92,7 +92,7 @@ class SimplePigTest(unittest.TestCase):
             subprocess.Popen = p
 
 
-@attr('apache')
+@pytest.mark.apache
 class ComplexPigTest(unittest.TestCase):
     def setUp(self):
         pass
@@ -176,7 +176,7 @@ def _get_fake_Popen(arglist_result, return_code, *args, **kwargs):
     def Popen_fake(arglist, shell=None, stdout=None, stderr=None, env=None, close_fds=True):
         arglist_result.append(arglist)
 
-        class P(object):
+        class P:
             number_of_process_polls = 5
 
             def __init__(self):

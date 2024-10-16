@@ -14,7 +14,6 @@
 # License for the specific language governing permissions and limitations under
 # the License.
 #
-from __future__ import print_function
 
 import os
 import sys
@@ -25,14 +24,14 @@ from boto.s3 import key
 from botocore.exceptions import ClientError
 from mock import patch
 
-from helpers import skipOnTravis, unittest, with_config
+from helpers import skipOnTravisAndGithubActions, unittest, with_config
 from luigi.contrib.s3 import (DeprecatedBotoClientException, FileNotFoundException,
                               InvalidDeleteException, S3Client, S3Target)
 from luigi.target import MissingParentDirectory
 from moto import mock_s3, mock_sts
 from target_test import FileSystemTargetTestMixin
 
-from nose.plugins.attrib import attr
+import pytest
 
 if (3, 4, 0) <= sys.version_info[:3] < (3, 4, 3):
     # spulec/moto#308
@@ -41,6 +40,7 @@ if (3, 4, 0) <= sys.version_info[:3] < (3, 4, 3):
 
 AWS_ACCESS_KEY = "XXXXXXXXXXXXXXXXXXXX"
 AWS_SECRET_KEY = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+AWS_SESSION_TOKEN = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 
 
 def create_bucket():
@@ -50,7 +50,7 @@ def create_bucket():
     return conn
 
 
-@attr('aws')
+@pytest.mark.aws
 class TestS3Target(unittest.TestCase, FileSystemTargetTestMixin):
 
     def setUp(self):
@@ -72,6 +72,11 @@ class TestS3Target(unittest.TestCase, FileSystemTargetTestMixin):
         create_bucket()
         return S3Target('s3://mybucket/test_file', client=client, format=format, **kwargs)
 
+    def create_target_with_session(self, format=None, **kwargs):
+        client = S3Client(AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_SESSION_TOKEN)
+        create_bucket()
+        return S3Target('s3://mybucket/test_file', client=client, format=format, **kwargs)
+
     def test_read(self):
         client = S3Client(AWS_ACCESS_KEY, AWS_SECRET_KEY)
         create_bucket()
@@ -81,8 +86,21 @@ class TestS3Target(unittest.TestCase, FileSystemTargetTestMixin):
         file_str = read_file.read()
         self.assertEqual(self.tempFileContents, file_str.encode('utf-8'))
 
+    def test_read_with_session(self):
+        client = S3Client(AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_SESSION_TOKEN)
+        create_bucket()
+        client.put(self.tempFilePath, 's3://mybucket/tempfile-with-session')
+        t = S3Target('s3://mybucket/tempfile-with-session', client=client)
+        read_file = t.open()
+        file_str = read_file.read()
+        self.assertEqual(self.tempFileContents, file_str.encode('utf-8'))
+
     def test_read_no_file(self):
         t = self.create_target()
+        self.assertRaises(FileNotFoundException, t.open)
+
+    def test_read_no_file_with_session(self):
+        t = self.create_target_with_session()
         self.assertRaises(FileNotFoundException, t.open)
 
     def test_read_no_file_sse(self):
@@ -130,7 +148,7 @@ class TestS3Target(unittest.TestCase, FileSystemTargetTestMixin):
         self.assertEqual('s3://mybucket/test_file', path)
 
 
-@attr('aws')
+@pytest.mark.aws
 class TestS3Client(unittest.TestCase):
     def setUp(self):
         f = tempfile.NamedTemporaryFile(mode='wb', delete=False)
@@ -186,6 +204,10 @@ class TestS3Client(unittest.TestCase):
         s3_client.put(self.tempFilePath, 's3://mybucket/putMe')
         self.assertTrue(s3_client.exists('s3://mybucket/putMe'))
 
+        s3_client = S3Client(AWS_ACCESS_KEY, AWS_SECRET_KEY, AWS_SESSION_TOKEN)
+        s3_client.put(self.tempFilePath, 's3://mybucket/putMe')
+        self.assertTrue(s3_client.exists('s3://mybucket/putMe'))
+
     def test_put_no_such_bucket(self):
         # intentionally don't create bucket
         s3_client = S3Client(AWS_ACCESS_KEY, AWS_SECRET_KEY)
@@ -232,7 +254,7 @@ class TestS3Client(unittest.TestCase):
             s3_client.put('SOMESTRING',
                           's3://mybucket/putMe', host='us-east-1')
 
-    @skipOnTravis("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
+    @skipOnTravisAndGithubActions("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
     def test_put_multipart_multiple_parts_non_exact_fit(self):
         """
         Test a multipart put with two parts, where the parts are not exactly the split size.
@@ -242,7 +264,7 @@ class TestS3Client(unittest.TestCase):
         file_size = (part_size * 2) - 1000
         return self._run_multipart_test(part_size, file_size)
 
-    @skipOnTravis("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
+    @skipOnTravisAndGithubActions("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
     def test_put_multipart_multiple_parts_exact_fit(self):
         """
         Test a multipart put with multiple parts, where the parts are exactly the split size.
@@ -495,7 +517,7 @@ class TestS3Client(unittest.TestCase):
         self.assertTrue(s3_client.remove('s3://mybucket/removemedir/'))
         self.assertFalse(s3_client.exists('s3://mybucket/removedir/'))
 
-    @skipOnTravis("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
+    @skipOnTravisAndGithubActions("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
     def test_copy_multiple_parts_non_exact_fit(self):
         """
         Test a multipart put with two parts, where the parts are not exactly the split size.
@@ -503,7 +525,7 @@ class TestS3Client(unittest.TestCase):
         # First, put a file into S3
         self._run_copy_test(self.test_put_multipart_multiple_parts_non_exact_fit)
 
-    @skipOnTravis("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
+    @skipOnTravisAndGithubActions("passes and fails intermitantly, suspecting it's a race condition not handled by moto")
     def test_copy_multiple_parts_exact_fit(self):
         """
         Test a copy multiple parts, where the parts are exactly the split size.
@@ -542,7 +564,7 @@ class TestS3Client(unittest.TestCase):
         self._run_copy_response_test(response, expected_num=0, expected_size=0)
 
     @mock_s3
-    @skipOnTravis('https://travis-ci.org/spotify/luigi/jobs/145895385')
+    @skipOnTravisAndGithubActions('https://travis-ci.org/spotify/luigi/jobs/145895385')
     def test_copy_dir(self):
         """
         Test copying 20 files from one folder to another

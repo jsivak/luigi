@@ -118,6 +118,14 @@ class ExternalProgramTask(luigi.Task):
         file_object.seek(0)
         return ''.join(map(lambda s: s.decode('utf-8'), file_object.readlines()))
 
+    def build_tracking_url(self, logs_output):
+        """
+        This method is intended for transforming pattern match in logs to an URL
+        :param logs_output: Found match of `self.tracking_url_pattern`
+        :return: a tracking URL for the task
+        """
+        return logs_output
+
     def run(self):
         args = list(map(str, self.program_args()))
 
@@ -180,8 +188,11 @@ class ExternalProgramTask(luigi.Task):
                         file_to_write.write(new_line)
                     match = re.search(pattern, new_line.decode('utf-8'))
                     if match:
-                        self.set_tracking_url(match.group(1))
+                        self.set_tracking_url(
+                            self.build_tracking_url(match.group(1))
+                        )
                 else:
+                    file_to_write.flush()
                     sleep(time_to_sleep)
 
         track_proc = Process(target=_track_url_by_pattern)
@@ -197,7 +208,7 @@ class ExternalProgramTask(luigi.Task):
             pipe_to_read.close()
 
 
-class ExternalProgramRunContext(object):
+class ExternalProgramRunContext:
     def __init__(self, proc):
         self.proc = proc
 
@@ -249,13 +260,13 @@ class ExternalPythonProgramTask(ExternalProgramTask):
     :py:class:`luigi.parameter.Parameter` s for setting a virtualenv and for
     extending the ``PYTHONPATH``.
     """
-    virtualenv = luigi.Parameter(
+    virtualenv = luigi.OptionalParameter(
         default=None,
         positional=False,
         description='path to the virtualenv directory to use. It should point to '
                     'the directory containing the ``bin/activate`` file used for '
                     'enabling the virtualenv.')
-    extra_pythonpath = luigi.Parameter(
+    extra_pythonpath = luigi.OptionalParameter(
         default=None,
         positional=False,
         description='extend the search path for modules by prepending this '

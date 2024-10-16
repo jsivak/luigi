@@ -25,17 +25,36 @@ import luigi
 import luigi.task_register
 import luigi.cmdline_parser
 from luigi.cmdline_parser import CmdlineParser
-from luigi import six
 import os
 
 import unittest
 
 
-def skipOnTravis(reason):
-    return unittest.skipIf(os.getenv('TRAVIS') == 'true', reason)
+def skipOnTravisAndGithubActions(reason):
+    if _override_skip_CI_tests():
+        # Do not skip the CI tests
+        return unittest.skipIf(False, "")
+    # run the skip CI tests logic
+    return unittest.skipIf(_running_on_travis() or _running_on_github_actions(), reason)
 
 
-class with_config(object):
+def skipOnGithubActions(reason):
+    return unittest.skipIf(_running_on_github_actions(), reason)
+
+
+def _running_on_travis():
+    return os.getenv('TRAVIS') == 'true'
+
+
+def _running_on_github_actions():
+    return os.getenv('GITHUB_ACTIONS') == 'true'
+
+
+def _override_skip_CI_tests():
+    return os.getenv('OVERRIDE_SKIP_CI_TESTS') == 'true'
+
+
+class with_config:
     """
     Decorator to override config settings for the length of a function.
 
@@ -114,9 +133,9 @@ class with_config(object):
             luigi.configuration.LuigiConfigParser._instance = new_conf
             orig_dict = {k: dict(orig_conf.items(k)) for k in orig_conf.sections()}
             new_dict = self._make_dict(orig_dict)
-            for (section, settings) in six.iteritems(new_dict):
+            for section, settings in new_dict.items():
                 new_conf.add_section(section)
-                for (name, value) in six.iteritems(settings):
+                for name, value in settings.items():
                     new_conf.set(section, name, value)
             try:
                 return fun(*args, **kwargs)
@@ -178,7 +197,7 @@ class LuigiTestCase(unittest.TestCase):
         return self.run_locally(space_seperated_args.split(' '))
 
 
-class parsing(object):
+class parsing:
     """
     Convenient decorator for test cases to set the parsing environment.
     """

@@ -22,11 +22,10 @@ to subclass :py:class:`luigi.contrib.hadoop.JobTask` and implement a
 an example of how to run a Hadoop job.
 """
 
-from __future__ import print_function
-
 import abc
 import datetime
 import glob
+import hashlib
 import logging
 import os
 import pickle
@@ -34,17 +33,12 @@ import random
 import re
 import shutil
 import signal
-try:
-    from StringIO import StringIO
-except ImportError:
-    from io import StringIO
+from io import StringIO
 import subprocess
 import sys
 import tempfile
 import warnings
-from hashlib import md5
 from itertools import groupby
-from luigi import six
 
 from luigi import configuration
 import luigi
@@ -53,9 +47,6 @@ import luigi.contrib.gcs
 import luigi.contrib.hdfs
 import luigi.contrib.s3
 from luigi.contrib import mrrunner
-
-if six.PY2:
-    from itertools import imap as map
 
 try:
     # See benchmark at https://gist.github.com/mvj3/02dca2bcc8b0ef1bbfb5
@@ -213,7 +204,7 @@ def flatten(sequence):
             yield item
 
 
-class HadoopRunContext(object):
+class HadoopRunContext:
 
     def __init__(self):
         self.job_id = None
@@ -391,7 +382,7 @@ def fetch_task_failures(tracking_url):
     return '\n'.join(error_text)
 
 
-class JobRunner(object):
+class JobRunner:
     run_job = NotImplemented
 
 
@@ -515,7 +506,7 @@ class HadoopJobRunner(JobRunner):
 
         jobconfs = job.jobconfs()
 
-        for k, v in six.iteritems(self.jobconfs):
+        for k, v in self.jobconfs.items():
             jobconfs.append('%s=%s' % (k, v))
 
         for conf in jobconfs:
@@ -523,7 +514,7 @@ class HadoopJobRunner(JobRunner):
 
         arglist += self.streaming_args
 
-        # Add additonal non-generic  per-job streaming args
+        # Add additional non-generic  per-job streaming args
         extra_streaming_args = job.extra_streaming_arguments()
         for (arg, value) in extra_streaming_args:
             if not arg.startswith('-'):  # safety first
@@ -629,7 +620,7 @@ class LocalJobRunner(JobRunner):
         lines = []
         for i, line in enumerate(input_stream):
             parts = line.rstrip('\n').split('\t')
-            blob = md5(str(i).encode('ascii')).hexdigest()  # pseudo-random blob to make sure the input isn't sorted
+            blob = hashlib.new('md5', str(i).encode('ascii'), usedforsecurity=False).hexdigest()  # pseudo-random blob to make sure the input isn't sorted
             lines.append((parts[:-1], blob, line))
         for _, _, line in sorted(lines):
             output.write(line)
@@ -894,7 +885,7 @@ class JobTask(BaseHadoopJobTask):
         """
         Increments any unflushed counter values.
         """
-        for key, count in six.iteritems(self._counter_dict):
+        for key, count in self._counter_dict.items():
             if count == 0:
                 continue
             args = list(key) + [count]
@@ -922,7 +913,7 @@ class JobTask(BaseHadoopJobTask):
 
     def extra_files(self):
         """
-        Can be overriden in subclass.
+        Can be overridden in subclass.
 
         Each element is either a string, or a pair of two strings (src, dst).
 

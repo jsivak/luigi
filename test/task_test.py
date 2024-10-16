@@ -14,13 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-
 import doctest
 import pickle
-import six
 import warnings
 
-from helpers import unittest, LuigiTestCase
+from helpers import unittest, LuigiTestCase, with_config
 from datetime import datetime, timedelta
 
 import luigi
@@ -80,7 +78,7 @@ class TaskTest(unittest.TestCase):
 
     def test_external_tasks_loadable(self):
         task = load_task("luigi", "ExternalTask", {})
-        assert(isinstance(task, luigi.ExternalTask))
+        self.assertTrue(isinstance(task, luigi.ExternalTask))
 
     def test_getpaths(self):
         class RequiredTask(luigi.Task):
@@ -137,23 +135,137 @@ class TaskTest(unittest.TestCase):
             DummyTask(**DUMMY_TASK_OK_PARAMS)
         self.assertEqual(len(w), 0, msg='No warning should be raised when correct parameter types are used')
 
-    if six.PY3:  # assertWarnsRegex was introduced in Python 3.2
-        def test_warn_on_non_str_param(self):
-            params = dict(**DUMMY_TASK_OK_PARAMS)
-            params['param'] = 42
-            with self.assertWarnsRegex(UserWarning, 'Parameter "param" with value "42" is not of type string.'):
-                DummyTask(**params)
+    def test_warn_on_non_str_param(self):
+        params = dict(**DUMMY_TASK_OK_PARAMS)
+        params['param'] = 42
+        with self.assertWarnsRegex(UserWarning, 'Parameter "param" with value "42" is not of type string.'):
+            DummyTask(**params)
 
-        def test_warn_on_non_timedelta_param(self):
-            params = dict(**DUMMY_TASK_OK_PARAMS)
+    def test_warn_on_non_timedelta_param(self):
+        params = dict(**DUMMY_TASK_OK_PARAMS)
 
-            class MockTimedelta(object):
-                days = 1
-                seconds = 1
+        class MockTimedelta:
+            days = 1
+            seconds = 1
 
-            params['timedelta_param'] = MockTimedelta()
-            with self.assertWarnsRegex(UserWarning, 'Parameter "timedelta_param" with value ".*" is not of type timedelta.'):
-                DummyTask(**params)
+        params['timedelta_param'] = MockTimedelta()
+        with self.assertWarnsRegex(UserWarning, 'Parameter "timedelta_param" with value ".*" is not of type timedelta.'):
+            DummyTask(**params)
+
+    def test_disable_window_seconds(self):
+        """
+        Deprecated disable_window_seconds param uses disable_window value
+        """
+        class ATask(luigi.Task):
+            disable_window = 17
+        task = ATask()
+        self.assertEqual(task.disable_window_seconds, 17)
+
+    @with_config({"ATaskWithBadParam": {"bad_param": "bad_value"}})
+    def test_bad_param(self):
+        class ATaskWithBadParam(luigi.Task):
+            bad_param = luigi.IntParameter()
+
+        with self.assertRaisesRegex(ValueError, r"ATaskWithBadParam\[args=\(\), kwargs={}\]: Error when parsing the default value of 'bad_param'"):
+            ATaskWithBadParam()
+
+    @with_config(
+        {
+            "TaskA": {
+                "a": "a",
+                "b": "b",
+                "c": "c",
+            },
+            "TaskB": {
+                "a": "a",
+                "b": "b",
+                "c": "c",
+            },
+        }
+    )
+    def test_unconsumed_params(self):
+        class TaskA(luigi.Task):
+            a = luigi.Parameter(default="a")
+
+        class TaskB(luigi.Task):
+            a = luigi.Parameter(default="a")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.filterwarnings(
+                action="ignore",
+                category=Warning,
+            )
+            warnings.simplefilter(
+                action="always",
+                category=luigi.parameter.UnconsumedParameterWarning,
+            )
+
+            TaskA()
+            TaskB()
+
+            assert len(w) == 4
+            expected = [
+                ("b", "TaskA"),
+                ("c", "TaskA"),
+                ("b", "TaskB"),
+                ("c", "TaskB"),
+            ]
+            for i, (expected_value, task_name) in zip(w, expected):
+                assert issubclass(i.category, luigi.parameter.UnconsumedParameterWarning)
+                assert str(i.message) == (
+                    "The configuration contains the parameter "
+                    f"'{expected_value}' with value '{expected_value}' that is not consumed by "
+                    f"the task '{task_name}'."
+                )
+
+
+class TaskFlattenOutputTest(unittest.TestCase):
+    def test_single_task(self):
+        expected = [luigi.LocalTarget("f1.txt"), luigi.LocalTarget("f2.txt")]
+
+        class TestTask(luigi.ExternalTask):
+            def output(self):
+                return expected
+
+        self.assertListEqual(luigi.task.flatten_output(TestTask()), expected)
+
+    def test_wrapper_task(self):
+        expected = [luigi.LocalTarget("f1.txt"), luigi.LocalTarget("f2.txt")]
+
+        class Test1Task(luigi.ExternalTask):
+            def output(self):
+                return expected[0]
+
+        class Test2Task(luigi.ExternalTask):
+            def output(self):
+                return expected[1]
+
+        @luigi.util.requires(Test1Task, Test2Task)
+        class TestWrapperTask(luigi.WrapperTask):
+            pass
+
+        self.assertListEqual(luigi.task.flatten_output(TestWrapperTask()), expected)
+
+    def test_wrapper_tasks_diamond(self):
+        expected = [luigi.LocalTarget("file.txt")]
+
+        class TestTask(luigi.ExternalTask):
+            def output(self):
+                return expected
+
+        @luigi.util.requires(TestTask)
+        class LeftWrapperTask(luigi.WrapperTask):
+            pass
+
+        @luigi.util.requires(TestTask)
+        class RightWrapperTask(luigi.WrapperTask):
+            pass
+
+        @luigi.util.requires(LeftWrapperTask, RightWrapperTask)
+        class MasterWrapperTask(luigi.WrapperTask):
+            pass
+
+        self.assertListEqual(luigi.task.flatten_output(MasterWrapperTask()), expected)
 
 
 class ExternalizeTaskTest(LuigiTestCase):
@@ -395,3 +507,15 @@ class AutoNamespaceTest(LuigiTestCase):
             pass
         luigi.namespace(scope='incorrect_namespace')
         self.assertEqual(MyTask.get_task_namespace(), '')
+
+
+class InitSubclassTest(LuigiTestCase):
+    def test_task_works_with_init_subclass(self):
+        class ReceivesClassKwargs(luigi.Task):
+            def __init_subclass__(cls, x, **kwargs):
+                super(ReceivesClassKwargs, cls).__init_subclass__()
+                cls.x = x
+
+        class Receiver(ReceivesClassKwargs, x=1):
+            pass
+        self.assertEquals(Receiver.x, 1)

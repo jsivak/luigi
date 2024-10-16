@@ -26,25 +26,24 @@ import warnings
 from enum import IntEnum
 import json
 from json import JSONEncoder
-from collections import OrderedDict
-try:
-    from collections.abc import Mapping
-except ImportError:
-    from collections import Mapping
 import operator
-import functools
 from ast import literal_eval
-
+from pathlib import Path
 try:
-    from ConfigParser import NoOptionError, NoSectionError
+    import jsonschema
+    _JSONSCHEMA_ENABLED = True
 except ImportError:
-    from configparser import NoOptionError, NoSectionError
+    _JSONSCHEMA_ENABLED = False
+
+from configparser import NoOptionError, NoSectionError
 
 from luigi import date_interval
 from luigi import task_register
-from luigi import six
 from luigi import configuration
 from luigi.cmdline_parser import CmdlineParser
+
+from .freezing import recursively_freeze, recursively_unfreeze, FrozenOrderedDict
+
 
 _no_value = object()
 
@@ -94,7 +93,18 @@ class DuplicateParameterException(ParameterException):
     pass
 
 
-class Parameter(object):
+class OptionalParameterTypeWarning(UserWarning):
+    """
+    Warning class for OptionalParameterMixin with wrong type.
+    """
+    pass
+
+
+class UnconsumedParameterWarning(UserWarning):
+    """Warning class for parameters that are not consumed by the task."""
+
+
+class Parameter:
     """
     Parameter whose value is a ``str``, and a base class for other parameter types.
 
@@ -282,7 +292,7 @@ class Parameter(object):
     def _warn_on_wrong_param_type(self, param_name, param_value):
         if self.__class__ != Parameter:
             return
-        if not isinstance(param_value, six.string_types):
+        if not isinstance(param_value, str):
             warnings.warn('Parameter "{}" with value "{}" is not of type string.'.format(param_name, param_value))
 
     def normalize(self, x):
@@ -330,24 +340,66 @@ class Parameter(object):
         }
 
 
-class OptionalParameter(Parameter):
-    """ A Parameter that treats empty string as None """
+class OptionalParameterMixin:
+    """
+    Mixin to make a parameter class optional and treat empty string as None.
+    """
+
+    expected_type = type(None)
 
     def serialize(self, x):
+        """
+        Parse the given value if the value is not None else return an empty string.
+        """
         if x is None:
             return ''
         else:
-            return str(x)
+            return super().serialize(x)
 
     def parse(self, x):
-        return x or None
+        """
+        Parse the given value if it is a string (empty strings are parsed to None).
+        """
+        if not isinstance(x, str):
+            return x
+        elif x:
+            return super().parse(x)
+        else:
+            return None
+
+    def normalize(self, x):
+        """
+        Normalize the given value if it is not None.
+        """
+        if x is None:
+            return None
+        return super().normalize(x)
 
     def _warn_on_wrong_param_type(self, param_name, param_value):
-        if self.__class__ != OptionalParameter:
-            return
-        if not isinstance(param_value, six.string_types) and param_value is not None:
-            warnings.warn('OptionalParameter "{}" with value "{}" is not of type string or None.'.format(
-                param_name, param_value))
+        if not isinstance(param_value, self.expected_type) and param_value is not None:
+            try:
+                param_type = "any type in " + str([i.__name__ for i in self.expected_type]).replace("'", '"')
+            except TypeError:
+                param_type = f'type "{self.expected_type.__name__}"'
+            warnings.warn(
+                (
+                    f'{self.__class__.__name__} "{param_name}" with value '
+                    f'"{param_value}" is not of {param_type} or None.'
+                ),
+                OptionalParameterTypeWarning,
+            )
+
+
+class OptionalParameter(OptionalParameterMixin, Parameter):
+    """Class to parse optional parameters."""
+
+    expected_type = str
+
+
+class OptionalStrParameter(OptionalParameterMixin, Parameter):
+    """Class to parse optional str parameters."""
+
+    expected_type = str
 
 
 _UNIX_EPOCH = datetime.datetime.utcfromtimestamp(0)
@@ -363,7 +415,8 @@ class _DateParameterBase(Parameter):
         self.interval = interval
         self.start = start if start is not None else _UNIX_EPOCH.date()
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def date_format(self):
         """
         Override me with a :py:meth:`~datetime.date.strftime` string.
@@ -507,14 +560,16 @@ class _DatetimeParameterBase(Parameter):
         self.interval = interval
         self.start = start if start is not None else _UNIX_EPOCH
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def date_format(self):
         """
         Override me with a :py:meth:`~datetime.date.strftime` string.
         """
         pass
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def _timedelta(self):
         """
         How to move one interval of this type forward (i.e. not counting self.interval).
@@ -631,6 +686,12 @@ class IntParameter(Parameter):
         return value + 1
 
 
+class OptionalIntParameter(OptionalParameterMixin, IntParameter):
+    """Class to parse optional int parameters."""
+
+    expected_type = int
+
+
 class FloatParameter(Parameter):
     """
     Parameter whose value is a ``float``.
@@ -641,6 +702,12 @@ class FloatParameter(Parameter):
         Parses a ``float`` from the string using ``float()``.
         """
         return float(s)
+
+
+class OptionalFloatParameter(OptionalParameterMixin, FloatParameter):
+    """Class to parse optional float parameters."""
+
+    expected_type = float
 
 
 class BoolParameter(Parameter):
@@ -713,6 +780,12 @@ class BoolParameter(Parameter):
         return parser_kwargs
 
 
+class OptionalBoolParameter(OptionalParameterMixin, BoolParameter):
+    """Class to parse optional bool parameters."""
+
+    expected_type = bool
+
+
 class DateIntervalParameter(Parameter):
     """
     A Parameter whose value is a :py:class:`~luigi.date_interval.DateInterval`.
@@ -746,6 +819,7 @@ class TimeDeltaParameter(Parameter):
     """
     Class that maps to timedelta using strings in any of the following forms:
 
+     * A bare number is interpreted as duration in seconds.
      * ``n {w[eek[s]]|d[ay[s]]|h[our[s]]|m[inute[s]|s[second[s]]}`` (e.g. "1 week 2 days" or "1 h")
         Note: multiple arguments must be supplied in longest to shortest unit order
      * ISO 8601 duration ``PnDTnHnMnS`` (each field optional, years and months not supported)
@@ -760,7 +834,7 @@ class TimeDeltaParameter(Parameter):
         if re_match and any(re_match.groups()):
             kwargs = {}
             has_val = False
-            for k, v in six.iteritems(re_match.groupdict(default="0")):
+            for k, v in re_match.groupdict(default="0").items():
                 val = int(v)
                 if val > -1:
                     has_val = True
@@ -793,6 +867,10 @@ class TimeDeltaParameter(Parameter):
 
         See :py:class:`TimeDeltaParameter` for details on supported formats.
         """
+        try:
+            return datetime.timedelta(seconds=float(input))
+        except ValueError:
+            pass
         result = self._parseIso8601(input)
         if not result:
             result = self._parseSimple(input)
@@ -893,57 +971,61 @@ class EnumParameter(Parameter):
         return e.name
 
 
-class _FrozenOrderedDict(Mapping):
+class EnumListParameter(Parameter):
     """
-    It is an immutable wrapper around ordered dictionaries that implements the complete :py:class:`collections.Mapping`
-    interface. It can be used as a drop-in replacement for dictionaries where immutability and ordering are desired.
+    A parameter whose value is a comma-separated list of :class:`~enum.Enum`. Values should come from the same enum.
+
+    Values are taken to be a list, i.e. order is preserved, duplicates may occur, and empty list is possible.
+
+    In the task definition, use
+
+    .. code-block:: python
+
+        class Model(enum.Enum):
+          Honda = 1
+          Volvo = 2
+
+        class MyTask(luigi.Task):
+          my_param = luigi.EnumListParameter(enum=Model)
+
+    At the command line, use,
+
+    .. code-block:: console
+
+        $ luigi --module my_tasks MyTask --my-param Honda,Volvo
+
     """
+
+    _sep = ','
 
     def __init__(self, *args, **kwargs):
-        self.__dict = OrderedDict(*args, **kwargs)
-        self.__hash = None
+        if 'enum' not in kwargs:
+            raise ParameterException('An enum class must be specified.')
+        self._enum = kwargs.pop('enum')
+        super(EnumListParameter, self).__init__(*args, **kwargs)
 
-    def __getitem__(self, key):
-        return self.__dict[key]
+    def parse(self, s):
+        values = [] if s == '' else s.split(self._sep)
 
-    def __iter__(self):
-        return iter(self.__dict)
+        for i, v in enumerate(values):
+            try:
+                values[i] = self._enum[v]
+            except KeyError:
+                raise ValueError('Invalid enum value "{}" index {} - could not be parsed'.format(v, i))
 
-    def __len__(self):
-        return len(self.__dict)
+        return tuple(values)
 
-    def __repr__(self):
-        return '<FrozenOrderedDict %s>' % repr(self.__dict)
-
-    def __hash__(self):
-        if self.__hash is None:
-            hashes = map(hash, self.items())
-            self.__hash = functools.reduce(operator.xor, hashes, 0)
-
-        return self.__hash
-
-    def get_wrapped(self):
-        return self.__dict
-
-
-def _recursively_freeze(value):
-    """
-    Recursively walks ``Mapping``s and ``list``s and converts them to ``_FrozenOrderedDict`` and ``tuples``, respectively.
-    """
-    if isinstance(value, Mapping):
-        return _FrozenOrderedDict(((k, _recursively_freeze(v)) for k, v in value.items()))
-    elif isinstance(value, list) or isinstance(value, tuple):
-        return tuple(_recursively_freeze(v) for v in value)
-    return value
+    def serialize(self, enum_values):
+        return self._sep.join([e.name for e in enum_values])
 
 
 class _DictParamEncoder(JSONEncoder):
     """
-    JSON encoder for :py:class:`~DictParameter`, which makes :py:class:`~_FrozenOrderedDict` JSON serializable.
+    JSON encoder for :py:class:`~DictParameter`, which makes :py:class:`~FrozenOrderedDict` JSON serializable.
     """
 
     def default(self, obj):
-        if isinstance(obj, _FrozenOrderedDict):
+        if isinstance(obj, FrozenOrderedDict):
             return obj.get_wrapped()
         return json.JSONEncoder.default(self, obj)
 
@@ -979,15 +1061,92 @@ class DictParameter(Parameter):
     It can be used to define dynamic parameters, when you do not know the exact list of your parameters (e.g. list of
     tags, that are dynamically constructed outside Luigi), or you have a complex parameter containing logically related
     values (like a database connection config).
+
+    It is possible to provide a JSON schema that should be validated by the given value:
+
+    .. code-block:: python
+
+        class MyTask(luigi.Task):
+          tags = luigi.DictParameter(
+            schema={
+              "type": "object",
+              "patternProperties": {
+                ".*": {"type": "string", "enum": ["web", "staging"]},
+              }
+            }
+          )
+
+          def run(self):
+            logging.info("Find server with role: %s", self.tags['role'])
+            server = aws.ec2.find_my_resource(self.tags)
+
+    Using this schema, the following command will work:
+
+    .. code-block:: console
+
+        $ luigi --module my_tasks MyTask --tags '{"role": "web", "env": "staging"}'
+
+    while this command will fail because the parameter is not valid:
+
+    .. code-block:: console
+
+        $ luigi --module my_tasks MyTask --tags '{"role": "UNKNOWN_VALUE", "env": "staging"}'
+
+    Finally, the provided schema can be a custom validator:
+
+    .. code-block:: python
+
+        custom_validator = jsonschema.Draft4Validator(
+          schema={
+            "type": "object",
+            "patternProperties": {
+              ".*": {"type": "string", "enum": ["web", "staging"]},
+            }
+          }
+        )
+
+        class MyTask(luigi.Task):
+          tags = luigi.DictParameter(schema=custom_validator)
+
+          def run(self):
+            logging.info("Find server with role: %s", self.tags['role'])
+            server = aws.ec2.find_my_resource(self.tags)
+
     """
+
+    def __init__(
+        self,
+        *args,
+        schema=None,
+        **kwargs,
+    ):
+        if schema is not None and not _JSONSCHEMA_ENABLED:
+            warnings.warn(
+                "The 'jsonschema' package is not installed so the parameter can not be validated "
+                "even though a schema is given."
+            )
+            self.schema = None
+        else:
+            self.schema = schema
+        super().__init__(
+            *args,
+            **kwargs,
+        )
 
     def normalize(self, value):
         """
-        Ensure that dictionary parameter is converted to a _FrozenOrderedDict so it can be hashed.
+        Ensure that dictionary parameter is converted to a FrozenOrderedDict so it can be hashed.
         """
-        return _recursively_freeze(value)
+        if self.schema is not None:
+            unfrozen_value = recursively_unfreeze(value)
+            try:
+                self.schema.validate(unfrozen_value)
+                value = unfrozen_value  # Validators may update the instance inplace
+            except AttributeError:
+                jsonschema.validate(instance=unfrozen_value, schema=self.schema)
+        return recursively_freeze(value)
 
-    def parse(self, s):
+    def parse(self, source):
         """
         Parses an immutable and ordered ``dict`` from a JSON string using standard JSON library.
 
@@ -998,10 +1157,19 @@ class DictParameter(Parameter):
 
         :param s: String to be parse
         """
-        return json.loads(s, object_pairs_hook=_FrozenOrderedDict)
+        # TOML based config convert params to python types itself.
+        if not isinstance(source, str):
+            return source
+        return json.loads(source, object_pairs_hook=FrozenOrderedDict)
 
     def serialize(self, x):
         return json.dumps(x, cls=_DictParamEncoder)
+
+
+class OptionalDictParameter(OptionalParameterMixin, DictParameter):
+    """Class to parse optional dict parameters."""
+
+    expected_type = FrozenOrderedDict
 
 
 class ListParameter(Parameter):
@@ -1033,7 +1201,88 @@ class ListParameter(Parameter):
     .. code-block:: console
 
         $ luigi --module my_tasks MyTask --grades '[100,70]'
+
+    It is possible to provide a JSON schema that should be validated by the given value:
+
+    .. code-block:: python
+
+        class MyTask(luigi.Task):
+          grades = luigi.ListParameter(
+            schema={
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 10
+              },
+              "minItems": 1
+            }
+          )
+
+          def run(self):
+                sum = 0
+                for element in self.grades:
+                    sum += element
+                avg = sum / len(self.grades)
+
+    Using this schema, the following command will work:
+
+    .. code-block:: console
+
+        $ luigi --module my_tasks MyTask --numbers '[1, 8.7, 6]'
+
+    while these commands will fail because the parameter is not valid:
+
+    .. code-block:: console
+
+        $ luigi --module my_tasks MyTask --numbers '[]'  # must have at least 1 element
+        $ luigi --module my_tasks MyTask --numbers '[-999, 999]'  # elements must be in [0, 10]
+
+    Finally, the provided schema can be a custom validator:
+
+    .. code-block:: python
+
+        custom_validator = jsonschema.Draft4Validator(
+          schema={
+            "type": "array",
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "minItems": 1
+          }
+        )
+
+        class MyTask(luigi.Task):
+          grades = luigi.ListParameter(schema=custom_validator)
+
+          def run(self):
+                sum = 0
+                for element in self.grades:
+                    sum += element
+                avg = sum / len(self.grades)
+
     """
+
+    def __init__(
+        self,
+        *args,
+        schema=None,
+        **kwargs,
+    ):
+        if schema is not None and not _JSONSCHEMA_ENABLED:
+            warnings.warn(
+                "The 'jsonschema' package is not installed so the parameter can not be validated "
+                "even though a schema is given."
+            )
+            self.schema = None
+        else:
+            self.schema = schema
+        super().__init__(
+            *args,
+            **kwargs,
+        )
 
     def normalize(self, x):
         """
@@ -1042,7 +1291,14 @@ class ListParameter(Parameter):
         :param str x: the value to parse.
         :return: the normalized (hashable/immutable) value.
         """
-        return _recursively_freeze(x)
+        if self.schema is not None:
+            unfrozen_value = recursively_unfreeze(x)
+            try:
+                self.schema.validate(unfrozen_value)
+                x = unfrozen_value  # Validators may update the instance inplace
+            except AttributeError:
+                jsonschema.validate(instance=unfrozen_value, schema=self.schema)
+        return recursively_freeze(x)
 
     def parse(self, x):
         """
@@ -1051,7 +1307,10 @@ class ListParameter(Parameter):
         :param str x: the value to parse.
         :return: the parsed value.
         """
-        return list(json.loads(x, object_pairs_hook=_FrozenOrderedDict))
+        i = json.loads(x, object_pairs_hook=FrozenOrderedDict)
+        if i is None:
+            return None
+        return list(i)
 
     def serialize(self, x):
         """
@@ -1062,6 +1321,12 @@ class ListParameter(Parameter):
         :param x: the value to serialize.
         """
         return json.dumps(x, cls=_DictParamEncoder)
+
+
+class OptionalListParameter(OptionalParameterMixin, ListParameter):
+    """Class to parse optional list parameters."""
+
+    expected_type = tuple
 
 
 class TupleParameter(ListParameter):
@@ -1114,9 +1379,15 @@ class TupleParameter(ListParameter):
         # ast.literal_eval(t_str) == t
         try:
             # loop required to parse tuple of tuples
-            return tuple(tuple(x) for x in json.loads(x, object_pairs_hook=_FrozenOrderedDict))
+            return tuple(tuple(x) for x in json.loads(x, object_pairs_hook=FrozenOrderedDict))
         except (ValueError, TypeError):
             return tuple(literal_eval(x))  # if this causes an error, let that error be raised.
+
+
+class OptionalTupleParameter(OptionalParameterMixin, TupleParameter):
+    """Class to parse optional tuple parameters."""
+
+    expected_type = tuple
 
 
 class NumericalParameter(Parameter):
@@ -1195,6 +1466,14 @@ class NumericalParameter(Parameter):
                     s=s, permitted_range=self._permitted_range))
 
 
+class OptionalNumericalParameter(OptionalParameterMixin, NumericalParameter):
+    """Class to parse optional numerical parameters."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.expected_type = self._var_type
+
+
 class ChoiceParameter(Parameter):
     """
     A parameter which takes two values:
@@ -1251,3 +1530,69 @@ class ChoiceParameter(Parameter):
         else:
             raise ValueError("{var} is not a valid choice from {choices}".format(
                 var=var, choices=self._choices))
+
+
+class OptionalChoiceParameter(OptionalParameterMixin, ChoiceParameter):
+    """Class to parse optional choice parameters."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.expected_type = self._var_type
+
+
+class PathParameter(Parameter):
+    """
+    Parameter whose value is a path.
+
+    In the task definition, use
+
+    .. code-block:: python
+
+        class MyTask(luigi.Task):
+            existing_file_path = luigi.PathParameter(exists=True)
+            new_file_path = luigi.PathParameter()
+
+            def run(self):
+                # Get data from existing file
+                with self.existing_file_path.open("r", encoding="utf-8") as f:
+                    data = f.read()
+
+                # Output message in new file
+                self.new_file_path.parent.mkdir(parents=True, exist_ok=True)
+                with self.new_file_path.open("w", encoding="utf-8") as f:
+                    f.write("hello from a PathParameter => ")
+                    f.write(data)
+
+    At the command line, use
+
+    .. code-block:: console
+
+        $ luigi --module my_tasks MyTask --existing-file-path <path> --new-file-path <path>
+    """
+
+    def __init__(self, *args, absolute=False, exists=False, **kwargs):
+        """
+        :param bool absolute: If set to ``True``, the given path is converted to an absolute path.
+        :param bool exists: If set to ``True``, a :class:`ValueError` is raised if the path does not exist.
+        """
+        super().__init__(*args, **kwargs)
+
+        self.absolute = absolute
+        self.exists = exists
+
+    def normalize(self, x):
+        """
+        Normalize the given value to a :class:`pathlib.Path` object.
+        """
+        path = Path(x)
+        if self.absolute:
+            path = path.absolute()
+        if self.exists and not path.exists():
+            raise ValueError(f"The path {path} does not exist.")
+        return path
+
+
+class OptionalPathParameter(OptionalParameter, PathParameter):
+    """Class to parse optional path parameters."""
+
+    expected_type = (str, Path)

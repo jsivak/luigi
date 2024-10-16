@@ -21,40 +21,65 @@ import luigi.target
 import time
 from luigi.contrib import gcp
 
+from tenacity import retry
+from tenacity import retry_if_exception
+from tenacity import retry_if_exception_type
+from tenacity import wait_exponential
+from tenacity import stop_after_attempt
+
 logger = logging.getLogger('luigi-interface')
 
+RETRYABLE_ERRORS = None
 try:
+    import httplib2
     from googleapiclient import discovery
+    from googleapiclient import errors
     from googleapiclient import http
 except ImportError:
     logger.warning('BigQuery module imported, but google-api-python-client is '
                    'not installed. Any BigQuery task will fail')
+else:
+    RETRYABLE_ERRORS = (httplib2.HttpLib2Error, IOError, TimeoutError, BrokenPipeError)
 
 
-class CreateDisposition(object):
+# Retry configurations. For more details, see https://tenacity.readthedocs.io/en/latest/
+def is_error_5xx(err):
+    return isinstance(err, errors.HttpError) and err.resp.status >= 500
+
+
+bq_retry = retry(retry=(retry_if_exception(is_error_5xx) | retry_if_exception_type(RETRYABLE_ERRORS)),
+                 wait=wait_exponential(multiplier=1, min=1, max=10),
+                 stop=stop_after_attempt(3),
+                 reraise=True,
+                 after=lambda x: x.args[0]._initialise_client()
+                 )
+
+
+class CreateDisposition:
     CREATE_IF_NEEDED = 'CREATE_IF_NEEDED'
     CREATE_NEVER = 'CREATE_NEVER'
 
 
-class WriteDisposition(object):
+class WriteDisposition:
     WRITE_TRUNCATE = 'WRITE_TRUNCATE'
     WRITE_APPEND = 'WRITE_APPEND'
     WRITE_EMPTY = 'WRITE_EMPTY'
 
 
-class QueryMode(object):
+class QueryMode:
     INTERACTIVE = 'INTERACTIVE'
     BATCH = 'BATCH'
 
 
-class SourceFormat(object):
+class SourceFormat:
     AVRO = 'AVRO'
     CSV = 'CSV'
     DATASTORE_BACKUP = 'DATASTORE_BACKUP'
     NEWLINE_DELIMITED_JSON = 'NEWLINE_DELIMITED_JSON'
+    PARQUET = 'PARQUET'
 
 
-class FieldDelimiter(object):
+class FieldDelimiter:
     """
     The separator for fields in a CSV file. The separator can be any ISO-8859-1 single-byte character.
     To use a character in the range 128-255, you must encode the character as UTF8.
@@ -71,23 +96,23 @@ class FieldDelimiter(object):
     PIPE = "|"
 
 
-class PrintHeader(object):
+class PrintHeader:
     TRUE = True
     FALSE = False
 
 
-class DestinationFormat(object):
+class DestinationFormat:
     AVRO = 'AVRO'
     CSV = 'CSV'
     NEWLINE_DELIMITED_JSON = 'NEWLINE_DELIMITED_JSON'
 
 
-class Compression(object):
+class Compression:
     GZIP = 'GZIP'
     NONE = 'NONE'
 
 
-class Encoding(object):
+class Encoding:
     """
     [Optional] The character encoding of the data. The supported values are UTF-8 or ISO-8859-1. The default value is UTF-8.
 
@@ -112,7 +137,7 @@ class BQTable(collections.namedtuple('BQTable', 'project_id dataset_id table_id 
                self.dataset.dataset_id + "/" + self.table_id
 
 
-class BigQueryClient(object):
+class BigQueryClient:
     """A client for Google BigQuery.
 
     For details of how authentication and the descriptor work, see the
@@ -121,13 +146,23 @@ class BigQueryClient(object):
     """
 
     def __init__(self, oauth_credentials=None, descriptor='', http_=None):
-        authenticate_kwargs = gcp.get_authenticate_kwargs(oauth_credentials, http_)
+        # Save initialisation arguments in case we need to re-create client
+        # due to connection timeout
+        self.oauth_credentials = oauth_credentials
+        self.descriptor = descriptor
+        self.http_ = http_
 
-        if descriptor:
-            self.client = discovery.build_from_document(descriptor, **authenticate_kwargs)
+        self._initialise_client()
+
+    def _initialise_client(self):
+        authenticate_kwargs = gcp.get_authenticate_kwargs(self.oauth_credentials, self.http_)
+
+        if self.descriptor:
+            self.client = discovery.build_from_document(self.descriptor, **authenticate_kwargs)
         else:
             self.client = discovery.build('bigquery', 'v2', cache_discovery=False, **authenticate_kwargs)
 
+    @bq_retry
     def dataset_exists(self, dataset):
         """Returns whether the given dataset exists.
         If regional location is specified for the dataset, that is also checked
@@ -146,7 +181,6 @@ class BigQueryClient(object):
                     raise Exception('''Dataset already exists with regional location {}. Can't use {}.'''.format(
                         fetched_location if fetched_location is not None else 'unspecified',
                         dataset.location))
-
         except http.HttpError as ex:
             if ex.resp.status == 404:
                 return False
@@ -154,6 +188,7 @@ class BigQueryClient(object):
 
         return True
 
+    @bq_retry
     def table_exists(self, table):
         """Returns whether the given table exists.
 
@@ -336,6 +371,9 @@ class BigQueryClient(object):
 
            :param dataset:
            :type dataset: BQDataset
+           :return: the job id of the job.
+           :rtype: str
+           :raises luigi.contrib.BigQueryExecutionError: if the job fails.
         """
 
         if dataset and not self.dataset_exists(dataset):
@@ -348,8 +386,8 @@ class BigQueryClient(object):
             status = self.client.jobs().get(projectId=project_id, jobId=job_id).execute(num_retries=10)
             if status['status']['state'] == 'DONE':
                 if status['status'].get('errorResult'):
-                    raise Exception('BigQuery job failed: {}'.format(status['status']['errorResult']))
-                return
+                    raise BigQueryExecutionError(job_id, status['status']['errorResult'])
+                return job_id
 
             logger.info('Waiting for job %s:%s to complete...', project_id, job_id)
             time.sleep(5)
@@ -414,7 +452,7 @@ class BigQueryTarget(luigi.target.Target):
         return str(self.table)
 
 
-class MixinBigQueryBulkComplete(object):
+class MixinBigQueryBulkComplete:
     """
     Allows to efficiently check if a range of BigQueryTargets are complete.
     This enables scheduling tasks with luigi range tools.
@@ -524,6 +562,16 @@ class BigQueryLoadTask(MixinBigQueryBulkComplete, luigi.Task):
         """	Indicates if BigQuery should allow quoted data sections that contain newline characters in a CSV file. The default value is false."""
         return False
 
+    def configure_job(self, configuration):
+        """Set additional job configuration.
+
+        This allows to specify job configuration parameters that are not exposed via Task properties.
+
+        :param configuration: Current configuration.
+        :return: New or updated configuration.
+        """
+        return configuration
+
     def run(self):
         output = self.output()
         assert isinstance(output, BigQueryTarget), 'Output must be a BigQueryTarget, not %s' % (output)
@@ -561,6 +609,8 @@ class BigQueryLoadTask(MixinBigQueryBulkComplete, luigi.Task):
             job['configuration']['load']['schema'] = {'fields': self.schema}
         else:
             job['configuration']['load']['autodetect'] = True
+
+        job['configuration'] = self.configure_job(job['configuration'])
 
         bq_client.run_job(output.table.project_id, job, dataset=output.table.dataset)
 
@@ -607,6 +657,16 @@ class BigQueryRunQueryTask(MixinBigQueryBulkComplete, luigi.Task):
         """
         return True
 
+    def configure_job(self, configuration):
+        """Set additional job configuration.
+
+        This allows to specify job configuration parameters that are not exposed via Task properties.
+
+        :param configuration: Current configuration.
+        :return: New or updated configuration.
+        """
+        return configuration
+
     def run(self):
         output = self.output()
         assert isinstance(output, BigQueryTarget), 'Output must be a BigQueryTarget, not %s' % (output)
@@ -639,6 +699,8 @@ class BigQueryRunQueryTask(MixinBigQueryBulkComplete, luigi.Task):
                 }
             }
         }
+
+        job['configuration'] = self.configure_job(job['configuration'])
 
         bq_client.run_job(output.table.project_id, job, dataset=output.table.dataset)
 
@@ -736,6 +798,16 @@ class BigQueryExtractTask(luigi.Task):
         """Whether to use compression."""
         return Compression.NONE
 
+    def configure_job(self, configuration):
+        """Set additional job configuration.
+
+        This allows to specify job configuration parameters that are not exposed via Task properties.
+
+        :param configuration: Current configuration.
+        :return: New or updated configuration.
+        """
+        return configuration
+
     def run(self):
         input = luigi.task.flatten(self.input())[0]
         assert (
@@ -772,6 +844,8 @@ class BigQueryExtractTask(luigi.Task):
             job['configuration']['extract']['fieldDelimiter'] = \
                 self.field_delimiter
 
+        job['configuration'] = self.configure_job(job['configuration'])
+
         bq_client.run_job(
             input.table.project_id,
             job,
@@ -786,3 +860,16 @@ BigqueryLoadTask = BigQueryLoadTask
 BigqueryRunQueryTask = BigQueryRunQueryTask
 BigqueryCreateViewTask = BigQueryCreateViewTask
 ExternalBigqueryTask = ExternalBigQueryTask
+
+
+class BigQueryExecutionError(Exception):
+    def __init__(self, job_id, error_message) -> None:
+        """
+        :param job_id: BigQuery Job ID
+        :type job_id: str
+        :param error_message: status['status']['errorResult'] for the failed job
+        :type error_message: str
+        """
+        super().__init__('BigQuery job {} failed: {}'.format(job_id, error_message))
+        self.error_message = error_message
+        self.job_id = job_id

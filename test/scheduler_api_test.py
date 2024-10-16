@@ -19,7 +19,7 @@ import itertools
 import mock
 import time
 from helpers import unittest
-from nose.plugins.attrib import attr
+import pytest
 import luigi.notifications
 from luigi.scheduler import DISABLED, DONE, FAILED, PENDING, \
     UNKNOWN, RUNNING, BATCH_RUNNING, UPSTREAM_RUNNING, Scheduler
@@ -28,7 +28,7 @@ luigi.notifications.DEBUG = True
 WORKER = 'myworker'
 
 
-@attr('scheduler')
+@pytest.mark.scheduler
 class SchedulerApiTest(unittest.TestCase):
 
     def setUp(self):
@@ -46,6 +46,7 @@ class SchedulerApiTest(unittest.TestCase):
             'disable_window': 10,
             'retry_count': 3,
             'disable_hard_timeout': 60 * 60,
+            'stable_done_cooldown_secs': 0
         }
 
     def tearDown(self):
@@ -1773,6 +1774,8 @@ class SchedulerApiTest(unittest.TestCase):
         self.add_task('ClassA', day='2016-02-01', val='5')
 
         self.search_pending('ClassA 2016-02-01 num', {expected})
+        # ensure that the task search is case insensitive
+        self.search_pending('classa 2016-02-01 num', {expected})
 
     def test_upstream_beyond_limit(self):
         sch = Scheduler(max_shown_tasks=3)
@@ -1849,42 +1852,42 @@ class SchedulerApiTest(unittest.TestCase):
     def test_task_first_failure_time(self):
         self.sch.add_task(worker=WORKER, task_id='A')
         test_task = self.sch._state.get_task('A')
-        self.assertIsNone(test_task.failures.first_failure_time)
+        self.assertIsNone(test_task.first_failure_time)
 
         time_before_failure = time.time()
         test_task.add_failure()
         time_after_failure = time.time()
 
         self.assertLessEqual(time_before_failure,
-                             test_task.failures.first_failure_time)
+                             test_task.first_failure_time)
         self.assertGreaterEqual(time_after_failure,
-                                test_task.failures.first_failure_time)
+                                test_task.first_failure_time)
 
     def test_task_first_failure_time_remains_constant(self):
         self.sch.add_task(worker=WORKER, task_id='A')
         test_task = self.sch._state.get_task('A')
-        self.assertIsNone(test_task.failures.first_failure_time)
+        self.assertIsNone(test_task.first_failure_time)
 
         test_task.add_failure()
-        first_failure_time = test_task.failures.first_failure_time
+        first_failure_time = test_task.first_failure_time
 
         test_task.add_failure()
-        self.assertEqual(first_failure_time, test_task.failures.first_failure_time)
+        self.assertEqual(first_failure_time, test_task.first_failure_time)
 
     def test_task_has_excessive_failures(self):
         self.sch.add_task(worker=WORKER, task_id='A')
         test_task = self.sch._state.get_task('A')
-        self.assertIsNone(test_task.failures.first_failure_time)
+        self.assertIsNone(test_task.first_failure_time)
 
         self.assertFalse(test_task.has_excessive_failures())
 
         test_task.add_failure()
         self.assertFalse(test_task.has_excessive_failures())
 
-        fake_failure_time = (test_task.failures.first_failure_time -
+        fake_failure_time = (test_task.first_failure_time -
                              2 * 60 * 60)
 
-        test_task.failures.first_failure_time = fake_failure_time
+        test_task.first_failure_time = fake_failure_time
         self.assertTrue(test_task.has_excessive_failures())
 
     def test_quadratic_behavior(self):
@@ -2243,6 +2246,28 @@ class SchedulerApiTest(unittest.TestCase):
         self.sch.forgive_failures(task_id='A')
         self.sch.forgive_failures(task_id='A')
         self.assertEqual(self.sch.get_work(worker=WORKER)['task_id'], 'A')
+
+    def test_mark_running_as_done_works(self):
+        # Adding a task, it runs, then force-commiting it sends it to DONE
+        self.setTime(0)
+        self.sch.add_task(worker=WORKER, task_id='A')
+        self.assertEqual(self.sch.get_work(worker=WORKER)['task_id'], 'A')
+        self.setTime(1)
+        self.assertEqual({'A'}, set(self.sch.task_list(RUNNING, '').keys()))
+        self.sch.mark_as_done(task_id='A')
+        self.assertEqual({'A'}, set(self.sch.task_list(DONE, '').keys()))
+
+    def test_mark_failed_as_done_works(self):
+        # Adding a task, saying it failed, then force-commiting it sends it to DONE
+        self.setTime(0)
+        self.sch.add_task(worker=WORKER, task_id='A')
+        self.assertEqual(self.sch.get_work(worker=WORKER)['task_id'], 'A')
+        self.sch.add_task(worker=WORKER, task_id='A', status=FAILED)
+        self.setTime(1)
+        self.assertEqual(set(), set(self.sch.task_list(RUNNING, '').keys()))
+        self.assertEqual({'A'}, set(self.sch.task_list(FAILED, '').keys()))
+        self.sch.mark_as_done(task_id='A')
+        self.assertEqual({'A'}, set(self.sch.task_list(DONE, '').keys()))
 
     @mock.patch('luigi.metrics.NoMetricsCollector')
     def test_collector_metrics_on_task_started(self, MetricsCollector):

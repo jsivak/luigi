@@ -26,15 +26,12 @@ import luigi.contrib.hadoop
 import luigi.contrib.hdfs
 import luigi.contrib.mrrunner
 import luigi.notifications
-import minicluster
 import mock
 from luigi.mock import MockTarget
-from luigi.six import StringIO
-from nose.plugins.attrib import attr
+from io import StringIO
+import pytest
 
 luigi.notifications.DEBUG = True
-
-luigi.contrib.hadoop.attach(minicluster)
 
 
 class OutputMixin(luigi.Task):
@@ -50,10 +47,7 @@ class OutputMixin(luigi.Task):
 class HadoopJobTask(luigi.contrib.hadoop.JobTask, OutputMixin):
 
     def job_runner(self):
-        if self.use_hdfs:
-            return minicluster.MiniClusterHadoopJobRunner()
-        else:
-            return luigi.contrib.hadoop.LocalJobRunner()
+        return luigi.contrib.hadoop.LocalJobRunner()
 
 
 class Words(OutputMixin):
@@ -192,7 +186,7 @@ def read_wordcount_output(p):
     return count
 
 
-class CommonTests(object):
+class CommonTests:
 
     @staticmethod
     def test_run(test_case):
@@ -247,7 +241,7 @@ class CommonTests(object):
         test_case.assertFalse(success)
 
 
-@attr('apache')
+@pytest.mark.apache
 class MapreduceLocalTest(unittest.TestCase):
     use_hdfs = False
 
@@ -292,29 +286,7 @@ class MapreduceLocalTest(unittest.TestCase):
         MockTarget.fs.clear()
 
 
-@attr('minicluster')
-class MapreduceIntegrationTest(minicluster.MiniClusterTestCase):
-
-    """ Uses the Minicluster functionality to test this against Hadoop """
-    use_hdfs = True
-
-    def test_run(self):
-        CommonTests.test_run(self)
-
-    def test_run_2(self):
-        CommonTests.test_run_2(self)
-
-    def test_map_only(self):
-        CommonTests.test_map_only(self)
-
-    # TODO(erikbern): some really annoying issue with minicluster causes
-    # test_unicode_job to hang
-
-    def test_failing_job(self):
-        CommonTests.test_failing_job(self)
-
-
-@attr('apache')
+@pytest.mark.apache
 class CreatePackagesArchive(unittest.TestCase):
 
     def setUp(self):
@@ -346,47 +318,54 @@ class CreatePackagesArchive(unittest.TestCase):
     @mock.patch('tarfile.open')
     def test_create_packages_archive_module(self, tar):
         module = __import__("module", None, None, 'dummy')
+        module.__file__ = os.path.relpath(module.__file__, os.getcwd())
         luigi.contrib.hadoop.create_packages_archive([module], '/dev/null')
         self._assert_module(tar.return_value.add)
 
     @mock.patch('tarfile.open')
     def test_create_packages_archive_package(self, tar):
         package = __import__("package", None, None, 'dummy')
+        package.__path__[0] = os.path.relpath(package.__path__[0], os.getcwd())
         luigi.contrib.hadoop.create_packages_archive([package], '/dev/null')
         self._assert_package(tar.return_value.add)
 
     @mock.patch('tarfile.open')
     def test_create_packages_archive_package_submodule(self, tar):
         package_submodule = __import__("package.submodule", None, None, 'dummy')
+        package_submodule.__file__ = os.path.relpath(package_submodule.__file__, os.getcwd())
         luigi.contrib.hadoop.create_packages_archive([package_submodule], '/dev/null')
         self._assert_package(tar.return_value.add)
 
     @mock.patch('tarfile.open')
     def test_create_packages_archive_package_submodule_with_absolute_import(self, tar):
         package_submodule_with_absolute_import = __import__("package.submodule_with_absolute_import", None, None, 'dummy')
+        package_submodule_with_absolute_import.__file__ = os.path.relpath(package_submodule_with_absolute_import.__file__, os.getcwd())
         luigi.contrib.hadoop.create_packages_archive([package_submodule_with_absolute_import], '/dev/null')
         self._assert_package(tar.return_value.add)
 
     @mock.patch('tarfile.open')
     def test_create_packages_archive_package_submodule_without_imports(self, tar):
         package_submodule_without_imports = __import__("package.submodule_without_imports", None, None, 'dummy')
+        package_submodule_without_imports.__file__ = os.path.relpath(package_submodule_without_imports.__file__, os.getcwd())
         luigi.contrib.hadoop.create_packages_archive([package_submodule_without_imports], '/dev/null')
         self._assert_package(tar.return_value.add)
 
     @mock.patch('tarfile.open')
     def test_create_packages_archive_package_subpackage(self, tar):
         package_subpackage = __import__("package.subpackage", None, None, 'dummy')
+        package_subpackage.__path__[0] = os.path.relpath(package_subpackage.__path__[0], os.getcwd())
         luigi.contrib.hadoop.create_packages_archive([package_subpackage], '/dev/null')
         self._assert_package_subpackage(tar.return_value.add)
 
     @mock.patch('tarfile.open')
     def test_create_packages_archive_package_subpackage_submodule(self, tar):
         package_subpackage_submodule = __import__("package.subpackage.submodule", None, None, 'dummy')
+        package_subpackage_submodule.__file__ = os.path.relpath(package_subpackage_submodule.__file__, os.getcwd())
         luigi.contrib.hadoop.create_packages_archive([package_subpackage_submodule], '/dev/null')
         self._assert_package_subpackage(tar.return_value.add)
 
 
-class MockProcess(object):
+class MockProcess:
     def __init__(self, err_lines, returncode):
         err = ''.join(err_lines)
         self.__err_len = len(err)
@@ -409,7 +388,7 @@ class KeyboardInterruptedMockProcess(MockProcess):
             raise KeyboardInterrupt
 
 
-@attr('apache')
+@pytest.mark.apache
 class JobRunnerTest(unittest.TestCase):
     def setUp(self):
         self.tracking_urls = []

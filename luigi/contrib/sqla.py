@@ -15,7 +15,7 @@
 # the License.
 #
 """
-Support for SQLAlchmey. Provides SQLAlchemyTarget for storing in databases
+Support for SQLAlchemy. Provides SQLAlchemyTarget for storing in databases
 supported by SQLAlchemy. The user would be responsible for installing the
 required database driver to connect using SQLAlchemy.
 
@@ -284,11 +284,13 @@ class CopyToTable(luigi.Task):
     echo = False
     connect_args = {}
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def connection_string(self):
         return None
 
-    @abc.abstractproperty
+    @property
+    @abc.abstractmethod
     def table(self):
         return None
 

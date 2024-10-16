@@ -15,8 +15,6 @@
 # the License.
 #
 
-from __future__ import absolute_import
-
 import logging
 import ntpath
 import os
@@ -192,7 +190,7 @@ class DropboxClient(FileSystem):
             return False
 
 
-class ReadableDropboxFile(object):
+class ReadableDropboxFile:
     def __init__(self, path, client):
         """
         Represents a file inside the Dropbox cloud which will be read
@@ -307,7 +305,7 @@ class DropboxTarget(FileSystemTarget):
     @contextmanager
     def temporary_path(self):
         tmp_dir = tempfile.mkdtemp()
-        num = random.randrange(0, 1e10)
+        num = random.randrange(0, 10_000_000_000)
         temp_path = '{}{}luigi-tmp-{:010}{}'.format(
             tmp_dir, os.sep,
             num, ntpath.basename(self.path))

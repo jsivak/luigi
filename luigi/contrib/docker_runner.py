@@ -40,7 +40,6 @@ import logging
 import luigi
 
 from luigi.local_target import LocalFileSystem
-from luigi import six
 
 logger = logging.getLogger('luigi-interface')
 
@@ -79,7 +78,23 @@ class DockerTask(luigi.Task):
         return None
 
     @property
+    def host_config_options(self):
+        '''
+        Override this to specify host_config options like gpu requests or shm
+        size e.g. `{"device_requests": [docker.types.DeviceRequest(count=1, capabilities=[["gpu"]])]}`
+
+        See https://docker-py.readthedocs.io/en/stable/api.html#docker.api.container.ContainerApiMixin.create_host_config
+        '''
+        return {}
+
+    @property
     def container_options(self):
+        '''
+        Override this to specify container options like user or ports e.g.
+        `{"user": f"{os.getuid()}:{os.getgid()}"}`
+
+        See https://docker-py.readthedocs.io/en/stable/api.html#docker.api.container.ContainerApiMixin.create_container
+        '''
         return {}
 
     @property
@@ -158,7 +173,7 @@ class DockerTask(luigi.Task):
         self.environment['LUIGI_TMP_DIR'] = self.container_tmp_dir
 
         # add additional volume binds specified by the user to the tmp_Dir bind
-        if isinstance(self.binds, six.string_types):
+        if isinstance(self.binds, str):
             self._binds.append(self.binds)
         elif isinstance(self.binds, list):
             self._binds.extend(self.binds)
@@ -193,7 +208,8 @@ class DockerTask(luigi.Task):
                          % (self._image, self.command, self._binds))
 
             host_config = self._client.create_host_config(binds=self._binds,
-                                                          network_mode=self.network_mode)
+                                                          network_mode=self.network_mode,
+                                                          **self.host_config_options)
 
             container = self._client.create_container(self._image,
                                                       command=self.command,

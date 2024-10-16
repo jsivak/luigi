@@ -24,16 +24,12 @@ import logging.config
 import os.path
 
 from luigi.configuration import get_config, LuigiConfigParser
+from luigi.freezing import recursively_unfreeze
 
-# In python3 ConfigParser was renamed
-# https://stackoverflow.com/a/41202010
-try:
-    from ConfigParser import NoSectionError
-except ImportError:
-    from configparser import NoSectionError
+from configparser import NoSectionError
 
 
-class BaseLogging(object):
+class BaseLogging:
     config = get_config()
 
     @classmethod
@@ -45,7 +41,7 @@ class BaseLogging(object):
             logging_config = cls.config['logging']
         except (TypeError, KeyError, NoSectionError):
             return False
-        logging.config.dictConfig(logging_config)
+        logging.config.dictConfig(recursively_unfreeze(logging_config))
         return True
 
     @classmethod

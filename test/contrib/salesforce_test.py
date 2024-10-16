@@ -25,10 +25,9 @@ from luigi.contrib.salesforce import SalesforceAPI, QuerySalesforce
 from helpers import unittest
 import mock
 from luigi.mock import MockTarget
-from luigi.six import PY3
 import re
 
-from nose.plugins.attrib import attr
+import pytest
 
 
 def mocked_requests_get(*args, **kwargs):
@@ -63,18 +62,15 @@ def mocked_open(*args, **kwargs):
         return old__open(*args)
 
 
-@attr('contrib')
+@pytest.mark.contrib
 class TestSalesforceAPI(unittest.TestCase):
     # We patch 'requests.get' with our own method. The mock object is passed in to our test case method.
     @mock.patch('requests.get', side_effect=mocked_requests_get)
     def test_deprecated_results_warning(self, mock_get):
         sf = SalesforceAPI('xx', 'xx', 'xx')
-        if PY3:
-            with self.assertWarnsRegex(UserWarning, r'get_batch_results is deprecated'):
-                result_id = sf.get_batch_results('job_id', 'batch_id')
-        else:
+        with self.assertWarnsRegex(UserWarning, r'get_batch_results is deprecated'):
             result_id = sf.get_batch_results('job_id', 'batch_id')
-        self.assertEqual('1234', result_id)
+            self.assertEqual('1234', result_id)
 
     @mock.patch('requests.get', side_effect=mocked_requests_get)
     def test_result_ids(self, mock_get):
@@ -96,13 +92,10 @@ class TestQuerySalesforce(QuerySalesforce):
         return "SELECT * FROM %s" % self.object_name
 
 
-@attr('contrib')
+@pytest.mark.contrib
 class TestSalesforceQuery(unittest.TestCase):
-    patch_name = '__builtin__.open'
-    if PY3:
-        patch_name = 'builtins.open'
 
-    @mock.patch(patch_name, side_effect=mocked_open)
+    @mock.patch('builtins.open', side_effect=mocked_open)
     def setUp(self, mock_open):
         MockTarget.fs.clear()
         self.result_ids = ['a', 'b', 'c']
@@ -118,7 +111,7 @@ class TestSalesforceQuery(unittest.TestCase):
                 self.all_lines += line+"\n"
                 counter += 2
 
-    @mock.patch(patch_name, side_effect=mocked_open)
+    @mock.patch('builtins.open', side_effect=mocked_open)
     def test_multi_csv_download(self, mock_open):
         qsf = TestQuerySalesforce()
 

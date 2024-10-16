@@ -14,7 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-from __future__ import print_function
 
 import datetime
 from helpers import unittest
@@ -28,6 +27,7 @@ luigi.notifications.DEBUG = True
 
 
 class A(luigi.Task):
+    task_namespace = 'wrap'  # to prevent task name conflict between tests
 
     def output(self):
         return MockTarget('/tmp/a.txt')

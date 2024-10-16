@@ -18,9 +18,9 @@
 from helpers import unittest
 
 import luigi.contrib.batch as batch
-from helpers import skipOnTravis
+from helpers import skipOnTravisAndGithubActions
 
-from nose.plugins.attrib import attr
+import pytest
 
 try:
     import boto3
@@ -29,7 +29,7 @@ except ImportError:
     raise unittest.SkipTest('boto3 is not installed. BatchTasks require boto3')
 
 
-class MockBotoBatchClient(object):
+class MockBotoBatchClient:
 
     def describe_job_queues(self):
         return {
@@ -82,7 +82,7 @@ class MockBotoBatchClient(object):
         }
 
 
-class MockBotoLogsClient(object):
+class MockBotoLogsClient:
 
     def get_log_events(self, logGroupName='', logStreamName='', startFromHead=True):
         return {
@@ -100,8 +100,8 @@ class MockBotoLogsClient(object):
         }
 
 
-@attr('aws')
-@skipOnTravis("boto3 now importable. These tests need mocked")
+@pytest.mark.aws
+@skipOnTravisAndGithubActions("boto3 now importable. These tests need mocked")
 class BatchClientTest(unittest.TestCase):
 
     def setUp(self):
@@ -163,8 +163,8 @@ class BatchClientTest(unittest.TestCase):
             self.assertTrue('log line 1' in context.exception)
 
 
-@attr('aws')
-@skipOnTravis("boto3 now importable. These tests need mocked")
+@pytest.mark.aws
+@skipOnTravisAndGithubActions("boto3 now importable. These tests need mocked")
 class BatchTaskTest(unittest.TestCase):
 
     def setUp(self):

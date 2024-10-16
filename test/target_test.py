@@ -14,9 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-from __future__ import print_function
 
-from helpers import unittest, skipOnTravis
+from helpers import unittest, skipOnTravisAndGithubActions
 from mock import Mock
 import re
 import random
@@ -58,7 +57,7 @@ class TargetTest(unittest.TestCase):
         GoodTarget()
 
 
-class FileSystemTargetTestMixin(object):
+class FileSystemTargetTestMixin:
     """All Target that take bytes (python2: str) should pass those
     tests. In addition, a test to verify the method `exists`should be added
     """
@@ -186,7 +185,7 @@ class FileSystemTargetTestMixin(object):
         with t.open("r") as f:
             self.assertEqual(f.foo, "custom read property")
 
-    @skipOnTravis('https://travis-ci.org/spotify/luigi/jobs/73693470')
+    @skipOnTravisAndGithubActions('https://travis-ci.org/spotify/luigi/jobs/73693470')
     def test_binary_write(self):
         t = self.create_target(luigi.format.Nop)
         with t.open('w') as f:
