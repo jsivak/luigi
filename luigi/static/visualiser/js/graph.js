@@ -146,8 +146,8 @@ Graph = (function() {
                 $.each(n.deps, function(i, dep) {
                     if (nodeIndex[dep]) {
                         var next_node = nodes[nodeIndex[dep]]
-                        var depth = (selfDependencies ? depth + 1 : classDepths[next_node.name])
-                        placeNodes(next_node, depth);
+                        var next_depth = (selfDependencies ? depth + 1 : classDepths[next_node.name])
+                        placeNodes(next_node, next_depth);
                     }
                 });
             }
@@ -277,14 +277,14 @@ Graph = (function() {
                 .appendTo(g);
 
             var titleText = node.name;
-            var content = $.map(node.params, function (value, name) { return name + ": " + value; }).join("<br>");
+            var content = $.map(node.params, function (value, name) { return escapeHtml(name + ": " + value); }).join("<br>");
             g.attr("title", titleText)
                 .popover({
                     trigger: 'hover',
                     container: 'body',
                     html: true,
                     placement: 'top',
-                    content: escapeHtml(content)
+                    content: content
                 });
         });
 

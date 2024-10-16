@@ -29,6 +29,7 @@ import hashlib
 import re
 import copy
 import functools
+from typing import Any, Dict
 
 import luigi
 
@@ -170,7 +171,7 @@ class Task(metaclass=Register):
 
     """
 
-    _event_callbacks = {}
+    _event_callbacks: Dict[Any, Any] = {}
 
     #: Priority of the task: the scheduler should favor available
     #: tasks with higher priority values first.
@@ -180,7 +181,7 @@ class Task(metaclass=Register):
 
     #: Resources used by the task. Should be formatted like {"scp": 1} to indicate that the
     #: task requires 1 unit of the scp resource.
-    resources = {}
+    resources: Dict[str, Any] = {}
 
     #: Number of seconds after which to time out the run function.
     #: No timeout if set to 0.
@@ -263,6 +264,13 @@ class Task(metaclass=Register):
             cls._event_callbacks.setdefault(cls, {}).setdefault(event, set()).add(callback)
             return callback
         return wrapped
+
+    @classmethod
+    def remove_event_handler(cls, event, callback):
+        """
+        Function to remove the event handler registered previously by the cls.event_handler decorator.
+        """
+        cls._event_callbacks[cls][event].remove(callback)
 
     def trigger_event(self, event, *args, **kwargs):
         """
@@ -437,9 +445,11 @@ class Task(metaclass=Register):
         if not hasattr(cls, "_unconsumed_params"):
             cls._unconsumed_params = set()
         if task_family in conf.sections():
+            ignore_unconsumed = getattr(cls, 'ignore_unconsumed', set())
             for key, value in conf[task_family].items():
+                key = key.replace('-', '_')
                 composite_key = f"{task_family}_{key}"
-                if key not in result and composite_key not in cls._unconsumed_params:
+                if key not in result and key not in ignore_unconsumed and composite_key not in cls._unconsumed_params:
                     warnings.warn(
                         "The configuration contains the parameter "
                         f"'{key}' with value '{value}' that is not consumed by the task "

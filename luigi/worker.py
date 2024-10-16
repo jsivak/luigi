@@ -55,7 +55,7 @@ from luigi.task_register import load_task
 from luigi.scheduler import DISABLED, DONE, FAILED, PENDING, UNKNOWN, Scheduler, RetryPolicy
 from luigi.scheduler import WORKER_STATE_ACTIVE, WORKER_STATE_DISABLED
 from luigi.target import Target
-from luigi.task import Task, Config, DynamicRequirements
+from luigi.task import Task, Config, DynamicRequirements, flatten
 from luigi.task_register import TaskClassException
 from luigi.task_status import RUNNING
 from luigi.parameter import BoolParameter, FloatParameter, IntParameter, OptionalParameter, Parameter, TimeDeltaParameter
@@ -182,7 +182,14 @@ class TaskProcess(multiprocessing.Process):
             # checking completeness of self.task so outputs of dependencies are
             # irrelevant.
             if self.check_unfulfilled_deps and not _is_external(self.task):
-                missing = [dep.task_id for dep in self.task.deps() if not self.check_complete(dep)]
+                missing = []
+                for dep in self.task.deps():
+                    if not self.check_complete(dep):
+                        nonexistent_outputs = [output for output in flatten(dep.output()) if not output.exists()]
+                        if nonexistent_outputs:
+                            missing.append(f'{dep.task_id} ({", ".join(map(str, nonexistent_outputs))})')
+                        else:
+                            missing.append(dep.task_id)
                 if missing:
                     deps = 'dependency' if len(missing) == 1 else 'dependencies'
                     raise RuntimeError('Unfulfilled %s at run time: %s' % (deps, ', '.join(missing)))
